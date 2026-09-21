@@ -24,6 +24,7 @@ from review_hub.engine.corrections import CorrectionApplier
 from review_hub.engine.prompting import build_research_prompt
 from review_hub.engine.research import LLMError
 from review_hub.engine.research.manual import ManualChatGPTBackend
+from review_hub.engine.research.obvious import ObviousAgentClient
 from review_hub.engine.research.openrouter import OpenRouterClient
 from review_hub.engine.runner import BatchRunner, PageOps
 from review_hub.engine.session import open_review_page, open_session, transport_ready_banner
@@ -53,6 +54,7 @@ def choose_backend(default: str = RESEARCH_BACKEND) -> str:
     print("=" * 42)
     print("1. OpenRouter API  (automated - free models only, no copy/paste)")
     print("2. Manual ChatGPT  (clipboard workflow - the default)")
+    print("3. Obvious agent   (automated web research - Obvious credits)")
     print("=" * 42)
     while True:
         value = input(f"Select backend [{'1' if default == 'api' else '2'}]: ").strip()
@@ -62,7 +64,9 @@ def choose_backend(default: str = RESEARCH_BACKEND) -> str:
             return "api"
         if value == "2":
             return "manual"
-        print("Enter 1 or 2.")
+        if value == "3":
+            return "obvious"
+        print("Enter 1, 2, or 3.")
 
 
 def preflight_api(backend: OpenRouterClient) -> bool:
@@ -73,6 +77,16 @@ def preflight_api(backend: OpenRouterClient) -> bool:
         print(f"\n✗ {exc}")
         return False
     print("✓ OPENROUTER_API_KEY is set.")
+    return True
+
+
+def preflight_obvious(backend: ObviousAgentClient) -> bool:
+    """Verify key, project, and relay are configured before the browser opens."""
+    problems = backend.preflight()
+    if problems:
+        print("\n" + "\n".join(problems))
+        return False
+    print("✓ Obvious config is set (API key, project, relay).")
     return True
 
 
@@ -91,7 +105,12 @@ def choose_run_count() -> int | None:
 def build_backend(name: str) -> Any:
     if name == "api":
         return OpenRouterClient()
+    if name == "obvious":
+        return ObviousAgentClient()
     return ManualChatGPTBackend()
+
+
+BACKEND_LABELS = {"api": "openrouter", "manual": "manual chatgpt", "obvious": "obvious agent"}
 
 
 def default_jsonl_sink():
@@ -135,6 +154,9 @@ def main() -> None:
     if backend_name == "api" and not preflight_api(backend):
         print("Cannot start the automated backend. Fix the API key and retry.")
         return
+    if backend_name == "obvious" and not preflight_obvious(backend):
+        print("Cannot start the Obvious backend. Fix the configuration above and retry.")
+        return
 
     run_count = choose_run_count()
     if run_count is None:
@@ -148,7 +170,7 @@ def main() -> None:
         )
 
     print(f"\nMODE: {mode.upper()}")
-    print(f"BACKEND: {'openrouter' if backend_name == 'api' else 'manual chatgpt'}")
+    print(f"BACKEND: {BACKEND_LABELS.get(backend_name, backend_name)}")
     print(f"Run count: {run_count} records")
     print(f"Session started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 

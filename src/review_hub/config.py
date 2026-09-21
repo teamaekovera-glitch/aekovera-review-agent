@@ -71,6 +71,34 @@ OPENROUTER_MAX_TOKENS = 2000
 OPENROUTER_REFERER = "https://aekovera.com"
 OPENROUTER_TITLE = "Aekovera Review Agent"
 
+
+# ---------------------------------------------------------------------------
+# Obvious agent backend (autonomous web research; the third backend)
+# ---------------------------------------------------------------------------
+# Dispatches each research prompt to an Obvious agent session (the External
+# Developer API) - a full agent with web search and page reads, i.e. the
+# manual ChatGPT workflow's research quality without the human. The answer
+# returns through a token-checked relay (relay/obvious_relay.py) so this
+# pipeline only makes OUTBOUND requests; see engine/research/obvious.py.
+#
+# Never hardcode the key. Set these in the environment before running:
+#   OBVIOUS_API_KEY      obv_... key from Settings → External Access (admin)
+#   OBVIOUS_PROJECT_ID   prj_... project the sessions run in
+#   OBVIOUS_RELAY_URL    base URL of the answer relay
+#   OBVIOUS_RELAY_TOKEN  the relay's shared token
+OBVIOUS_API_KEY = os.environ.get("OBVIOUS_API_KEY", "")
+OBVIOUS_PROJECT_ID = os.environ.get("OBVIOUS_PROJECT_ID", "")
+OBVIOUS_API_BASE = os.environ.get(
+    "OBVIOUS_API_BASE", "https://api.app.obvious.ai/api/v1"
+).rstrip("/")
+OBVIOUS_RELAY_URL = os.environ.get("OBVIOUS_RELAY_URL", "").rstrip("/")
+OBVIOUS_RELAY_TOKEN = os.environ.get("OBVIOUS_RELAY_TOKEN", "")
+
+OBVIOUS_POLL_INTERVAL = 5.0       # seconds between relay polls
+OBVIOUS_WAIT_TIMEOUT = 900.0      # give up after 15 minutes (clipboard-watch parity)
+OBVIOUS_DISPATCH_TIMEOUT = 60.0   # seconds per dispatch/poll HTTP request
+OBVIOUS_MAX_RETRIES = 3           # dispatch attempts before the record fails
+
 # Every prompt and response is written here for auditing.
 LLM_LOG_DIR = "llm_logs"
 RUN_LOG_DIR = "run_logs"  # BatchRunner transition logs (JSONL, one per run)

@@ -36,6 +36,7 @@ from review_hub.config import BASE_URL
 from review_hub.engine.corrections import CorrectionApplier
 from review_hub.engine.prompting import build_research_prompt
 from review_hub.engine.research.manual import PasteBoxBackend
+from review_hub.engine.research.obvious import ObviousAgentClient
 from review_hub.engine.research.openrouter import OpenRouterClient
 from review_hub.engine.runner import BatchRunner, PageOps
 from review_hub.engine.session import open_review_page, open_session
@@ -56,6 +57,7 @@ def default_backend_factories() -> dict[str, BackendFactory]:
     return {
         "manual": lambda store, run_id: PasteBoxBackend(StoreManualGate(store, run_id)),
         "api": lambda store, run_id: OpenRouterClient(),
+        "obvious": lambda store, run_id: ObviousAgentClient(),
     }
 
 
