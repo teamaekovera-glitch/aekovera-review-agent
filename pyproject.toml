@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "review-hub"
+version = "0.1.0"
+description = "Aekovera Review Hub - supplier review and enrichment control plane for CPG sourcing"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright",
+    "requests",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+# legacy/ is the frozen v34 reference archive (unmaintained, committed verbatim); skip linting it.
+extend-exclude = ["legacy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
