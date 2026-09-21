@@ -30,3 +30,6 @@ test-results/
 .DS_Store
 .idea/
 .vscode/
+
+# Obvious answer relay runtime data (undelivered answers)
+relay_data/

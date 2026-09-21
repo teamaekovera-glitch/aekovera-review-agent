@@ -29,7 +29,7 @@ class SettingsError(ValueError):
 
 
 # Never settable through the API and never included in a response.
-SECRET_SETTING_NAMES = frozenset({"OPENROUTER_API_KEY"})
+SECRET_SETTING_NAMES = frozenset({"OPENROUTER_API_KEY", "OBVIOUS_API_KEY", "OBVIOUS_RELAY_TOKEN"})
 
 _BOOL_KEYS = (
     "REUSE_RESULT_ON_REPEAT",
@@ -71,7 +71,7 @@ _STR_KEYS = ("RESEARCH_BACKEND",)
 EDITABLE_SETTINGS: tuple[str, ...] = _STR_KEYS + _BOOL_KEYS + _INT_KEYS + _FLOAT_KEYS + _LIST_KEYS
 
 # The value vocabulary the backend switch accepts (must match the engine).
-RESEARCH_BACKENDS = ("manual", "api")
+RESEARCH_BACKENDS = ("manual", "api", "obvious")
 
 # Every int knob here is a count, attempt cap, or millisecond budget: negative
 # values are meaningless, so they are rejected wholesale.
