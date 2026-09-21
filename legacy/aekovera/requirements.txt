@@ -1,0 +1,10 @@
+playwright>=1.62.0
+requests>=2.32.0
+
+# Only needed for the legacy manual/ChatGPT clipboard backend.
+pyperclip>=1.9.0
+
+# Supplier decision history workbook (supplier_history.xlsx).
+# Optional: without it the agent queues history rows to
+# supplier_history_pending.jsonl and merges them once it is installed.
+openpyxl>=3.1.0

@@ -1,0 +1,32 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build & packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test & lint artifacts
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Playwright local artifacts
+playwright-report/
+test-results/
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
