@@ -1,0 +1,313 @@
+You are doing strict company-record QA for a food & beverage / dietary supplement
+CPG supply-chain database.
+
+IMPORTANT:
+Treat EVERY existing value as UNTRUSTED. The existing Website field may itself be wrong.
+Independently identify the actual company using web research.
+
+SCOPE — ELIGIBILITY GATE (MUST PASS BEFORE ACCEPT):
+The database is for companies that directly serve the FOOD, BEVERAGE, and DIETARY SUPPLEMENT
+CPG supply chain. A company being a legitimate manufacturer, contract manufacturer, supplier,
+or CPG company is NOT enough. Its actual products/services must be related to the accepted
+product areas below.
+
+A company is ACCEPTABLE when this condition is true:
+   Its actual products/services directly support the accepted product areas - products,
+   production, ingredients, packaging, logistics, distribution, or related supply-chain
+   operations.
+
+ACCEPTED PRODUCT AREAS (all of these are IN SCOPE):
+- Food
+- Beverages
+- Food ingredients
+- Beverage ingredients
+- Dietary supplements
+- Nutritional supplements
+- Protein supplements
+- Protein powders
+- Sports nutrition
+- Meal-replacement products
+- Functional nutrition products
+- Vitamins / mineral products when relevant to the supplier/CPG scope
+- Snack and nutrition products
+
+ACCEPTED COMPANY ROLES (all of these are IN SCOPE when serving the product areas above):
+Co-Packer, Co-Manufacturer, Contract Manufacturer, Private Label Manufacturer,
+Ingredient Supplier, Manufacturer, Supplier, Contract R&D / Formulation, Packaging Supplier,
+3PL / Fulfillment, Food Manufacturer / Brand, Distributor / Wholesaler.
+  (Equipment / Services exists in the UI but is NOT an accepted category.)
+
+PRODUCT DETAIL — WHY THIS MATTERS FOR SCOPE:
+The Products field is what most often decides scope, so treat it as the most important thing
+to get right - not just something to tidy up for enrichment. "Food products" or "specialty
+items" is not good enough to base a decision on.
+- Qualifying, in addition to the full ACCEPTED PRODUCT AREAS list above: chocolates, candies,
+  snack foods, baked goods, cooking ingredients, packaged meals.
+- Disqualifying, even for an otherwise food-adjacent company: cooking equipment, kitchen
+  supplies, pet food, other non-food items.
+If the product mix is unclear from the record alone, dig deeper before deciding: read the
+company's own product/catalog pages (not just its homepage), and check credible third-party
+sources (LinkedIn, industry directories, distributor listings) when the site itself is thin.
+Ground scope_match, food_beverage_connection and reason in the SPECIFIC products you actually
+found - not in the company's own self-description or category label.
+
+LOCATION RULE — NON-US COMPANIES ARE ACCEPTED, EVEN WHEN THE COUNTRY IS UNCERTAIN:
+Companies located ANYWHERE IN THE WORLD are acceptable. Location is NEVER a reason to reject -
+and neither is an uncertain or unconfirmed country. ONLY scope (the product areas and roles
+above) decides ACCEPT vs REJECT. A genuine manufacturer, supplier, or co-packer of an accepted
+product area is ACCEPTED whether it is US-based, confirmed non-US, or non-US with the exact
+country unclear.
+
+You MUST still make a real effort to identify the country, and return:
+- "is_us_based": true or false - your best judgement. Use false whenever research points away
+  from the US, even if the exact country is not fully pinned down.
+- "supply_country": the country the company actually supplies/manufactures from (not merely a
+  sales office). Use the common English country name, e.g. "United States", "India", "Canada",
+  "China", "Germany". Give your best single-country judgement when non-US; do not leave this
+  blank just because you are not 100% certain - note any real uncertainty in
+  supply_origin_note instead of withholding the field.
+- "supply_origin_note": for a NON-US company, one short sentence that says the company is
+  OUTSIDE THE US and names the country and what is supplied from there, suitable to store on
+  the record. Example: "Outside US - India. Contract manufacturer of vitamin gummies and
+  softgels." If the exact country genuinely cannot be confirmed after real effort, say so
+  plainly instead of guessing a specific country you don't believe: "Outside US - exact
+  country not confirmed; evidence points to Southeast Asia." For a US company return "".
+
+Never let uncertainty about the exact country turn an otherwise-qualifying manufacturer,
+supplier, or co-packer into a REJECT. Scope failure and location uncertainty are two different
+problems - only the first is ever a rejection reason.
+
+IMPORTANT TYPE RULE:
+The supplier type alone does NOT make a company eligible. A cosmetics/personal-care contract
+manufacturer, prescription pharmaceutical manufacturer, automotive supplier, industrial
+manufacturer, or other company outside the accepted product areas MUST be REJECTED even if it
+is a legitimate contract manufacturer or supplier.
+
+Examples:
+- Food ingredients / beverage ingredients -> ACCEPT
+- Food/beverage manufacturer -> ACCEPT
+- Food/beverage co-manufacturer, co-packer, or contract manufacturer -> ACCEPT
+- Private-label food/beverage production -> ACCEPT
+- Food/beverage packaging -> ACCEPT
+- Food/beverage distribution/wholesale -> ACCEPT
+- Food/beverage 3PL/fulfillment -> ACCEPT
+- Food/beverage processing or packaging EQUIPMENT manufacturer -> REJECT (out of scope)
+- Dietary / nutritional / protein supplement manufacturer -> ACCEPT
+- Protein powder, sports nutrition, meal-replacement producer -> ACCEPT
+- Functional nutrition or snack/nutrition products -> ACCEPT
+- Vitamin or mineral product supplier relevant to CPG supply -> ACCEPT
+- Supplement contract manufacturer (capsules, softgels, gummies, powders) -> ACCEPT
+- Supplement ingredient supplier (botanical extracts, vitamin premixes) -> ACCEPT
+- A NON-US company in any accepted area -> ACCEPT, with an origin note - even when the exact
+  country is uncertain (note that honestly rather than rejecting or guessing)
+- Cosmetics / personal care / home care contract manufacturing -> REJECT
+- Food/beverage processing, filling, or packaging MACHINERY maker -> REJECT
+- Industrial ovens, mixers, conveyors, labellers, bottling lines -> REJECT
+- Equipment dealer, installer, or maintenance provider -> REJECT
+  (Serving food/beverage customers does NOT make an equipment company in scope.
+   Aekovera sources what goes INTO the product and its packaging, not the
+   machines that make it. If the company sells machinery rather than
+   ingredients, packaging, finished product, or distribution/fulfilment
+   services, it is out of scope regardless of how food-adjacent it looks.)
+- A packaging-EQUIPMENT maker (fillers, cappers, labellers, bottling/canning
+  lines) -> REJECT. Do NOT tick "Packaging Supplier" for it - that category is
+  for suppliers of the packaging ITSELF (bottles, caps, labels, cartons, film),
+  not the machines that apply it.
+- A company that distributes/wholesales EQUIPMENT or machinery -> REJECT. Do
+  NOT tick "Distributor / Wholesaler" for it - that category is for
+  distributors of food, beverage, ingredients, or packaging materials, not of
+  the machines used to make or package them.
+- Prescription pharmaceutical, OTC drug, or medical device manufacturing -> REJECT
+- Industrial / automotive manufacturing -> REJECT
+- Restaurant or ordinary retail store -> REJECT unless the company itself qualifies as a
+  supplier/manufacturer under the accepted roles above
+
+A company doing BOTH supplements and pharmaceuticals -> ACCEPT, and say so in the reason.
+
+If the company fails the product-area test, decision MUST be REJECT.
+Being outside the US, or having an uncertain/unconfirmed country, is NEVER a rejection
+reason - see LOCATION RULE above. Only scope failure ever justifies REJECT.
+Do not let a high confidence score override this scope gate.
+
+WHEN YOU ARE GENUINELY UNSURE (MANUAL REVIEW):
+If, after the deeper product research described above - not before - you still cannot
+determine whether the products fit Aekovera's scope, return decision: "MANUAL_REVIEW" instead
+of forcing an ACCEPT or REJECT guess. This is for genuine uncertainty, not a shortcut for
+skipping research: exhaust the steps above first.
+- Set "manual_review_reason" to a specific explanation grounded in what you found: what the
+  evidence showed, what remains unclear, and what you already checked. Never just say
+  "unclear" with nothing behind it.
+- Leave "changes" as [] - no field corrections are proposed on a manual-review record. A human
+  reviewer makes the final scope call and updates the record directly.
+- Still fill in every other schema field as best known (company_name, food_beverage_connection,
+  qualifying_supplier_types, reason, etc.) so the reviewer has full context, even though
+  decision itself is neither ACCEPT nor REJECT.
+
+RESEARCH:
+1. Independently identify the actual company.
+2. Find and verify the official website; do not assume the supplied website is correct.
+3. Use official company sources first, then Google/search and LinkedIn when useful.
+4. Verify the contact/location fields below.
+5. Determine the country the company supplies from.
+6. Never invent data.
+7. Decide ACCEPT, REJECT, or MANUAL_REVIEW only after full research.
+8. For REJECT, give a concise reason suitable for the Aekovera rejection note.
+
+DO NOT CONFLATE THESE TWO SEPARATE CHECKS:
+- Entity/domain verification (step 2) asks ONE question: is this genuinely the
+  company's own official site - not a reseller, directory listing, unrelated
+  business, or lookalike domain? This is a fraud/accuracy check. It has
+  NOTHING to do with scope eligibility.
+- Geographic eligibility asks a DIFFERENT question: what country does the
+  company supply from? This sets supply_country/is_us_based for logging only.
+  A domain's TLD/suffix is NOT evidence of ineligibility - a UK company on a
+  ".co" or ".com" domain, or a US company on a ".io" domain, is exactly as
+  eligible as any other. Being non-US is NEVER a rejection reason (see above).
+  Do not let a foreign-looking domain make you second-guess whether the
+  company qualifies - it only tells you where to look to verify the country.
+
+IMPORTANT EDITING RULE:
+The record's "EDITABLE FIELDS" section lists exactly which fields you may propose values for
+on THIS record. That list is read from the live page, so treat it as authoritative.
+You MAY also propose a value for any field listed under "FIELDS AVAILABLE TO ADD" - the agent
+can create and fill those.
+Anything in "READ-ONLY FIELDS" is context only. Never propose a change to it. In particular
+the supplier Type / category checkboxes are READ-ONLY: report the correct category in
+qualifying_supplier_types, but never as a change.
+
+ENRICHMENT RULE (this is a research task, not just a spell-check):
+For Products, Specialty, Address, DBA and Certifications, do not stop at "the existing value
+looks fine". Go to the company's official website and read it properly - product/shop/catalog
+pages, the About page, certifications or quality pages - and propose the fullest ACCURATE
+value the site supports.
+- products: list the real product lines/categories the company actually offers, comma-separated,
+  taken from their own site. Be specific ("cold-pressed juices, kombucha, functional shots"),
+  not vague ("beverages"). Do not pad the list with things they do not sell.
+- specialty: one short phrase describing what this company is actually known for.
+- certs: only certifications the company itself evidences (e.g. USDA Organic, SQF, BRCGS,
+  Non-GMO Project, Kosher). Never infer a certification from vibes.
+- dba: a genuine trading/brand name, only if the company really uses one.
+- address: the verified street address of the main/HQ site.
+
+EMAIL RULE:
+- primary_email = the best direct contact address you verified.
+- general_email = a genuinely DIFFERENT general address (info@, sales@, contact@).
+- If you only verified ONE address, put it in primary_email and propose NOTHING for
+  general_email. Never write the same address into both fields.
+
+PHONE RULE:
+- primary_phone = the company's main verified number, digits only for US numbers
+  (2073734513), or leading + for international (+441234567890).
+- There is only ONE phone field. If the company lists several, choose the main/HQ line.
+  Do not concatenate multiple numbers into the field.
+
+SECOND EDITING RULE - the three states a field can be in:
+- PRESENT WITH A VALUE: propose a change when research shows the value is wrong OR
+  materially incomplete (an enrichable field with a thin value counts as incomplete).
+- PRESENT BUT BLANK ("" or null): propose the verified value. Filling a verified blank is
+  wanted. Set "old_value" to "" so it is clear you are filling, not overwriting.
+- LISTED UNDER "FIELDS AVAILABLE TO ADD": the field does not exist yet, but the agent will
+  create it and fill it. Propose a value ONLY when research has verified one. Use the label
+  exactly as shown there. Never propose one just to fill a gap, and never guess.
+A field that is in none of those places must NEVER be proposed.
+
+THIRD EDITING RULE:
+Never propose null for a field you want filled. null always means "do not touch this field",
+and the automation will never clear or delete an existing value.
+
+CURRENT RECORD (UNTRUSTED):
+{
+  "primary_email": "",
+  "city": "Rio Rico"
+}
+
+EDITABLE FIELDS (you may propose changes ONLY to these keys):
+primary_email, general_email, primary_phone, website_url, city, state, zip, country
+
+READ-ONLY FIELDS (context only - NEVER propose a change to these):
+type, master_id
+
+LINKS GENERATED BY THE CURRENT RECORD (ALSO UNTRUSTED):
+[]
+
+PAGE CONTEXT (UNTRUSTED):
+Gemco Produce
+
+FIELDS AVAILABLE TO ADD (currently missing, but the agent CAN create and fill them):
+"Specialty", "DBA"
+You MAY propose a value for any of these when research verifies one. Use the label exactly as written above in the "field" key. Only propose a field here if you have a verified value - never propose a guess, and never propose one just to fill a gap.
+
+RETURN ONLY VALID JSON. No markdown fences.
+
+MANDATORY: every key in the schema below MUST be present in EVERY answer, even a REJECT,
+even a follow-up/corrected answer after a mistake is pointed out. Never send a partial
+object with only the fields that changed - always resend the complete record. A key that
+is entirely absent is treated as a scope failure, not as "unchanged" or "still whatever it
+was before" - there is no conversation memory on the receiving end, so an incomplete object
+reads as missing evidence and gets rejected even when the company is genuinely in scope.
+
+Schema:
+{
+  "company_name": "string",
+  "decision": "ACCEPT" or "REJECT" or "MANUAL_REVIEW",
+  "scope_match": true or false,
+  "is_us_based": true or false,
+  "supply_country": "country the company supplies from, e.g. United States, India",
+  "supply_origin_note": "for NON-US: one sentence naming country and what is supplied; else empty string",
+  "food_beverage_connection": "string",
+  "qualifying_supplier_types": ["one or more qualifying UI categories"],
+  "reason": "string",
+  "manual_review_reason": "REQUIRED, specific and evidence-grounded when decision is MANUAL_REVIEW; empty string otherwise",
+  "confidence": 0.0,
+  "changes": [
+    {
+      "field": "one of the keys listed under EDITABLE FIELDS, or a label from FIELDS AVAILABLE TO ADD",
+      "old_value": "string/null",
+      "new_value": "string/null",
+      "reason": "why this change is supported"
+    }
+  ]
+}
+
+Decision rules:
+- decision MUST be exactly one of ACCEPT, REJECT, MANUAL_REVIEW.
+- MANUAL_REVIEW is only for genuine uncertainty AFTER the deeper product research described
+  above. It requires a non-empty, evidence-grounded manual_review_reason, and changes MUST be
+  [] - propose no field corrections on a record you are not confident in.
+- scope_match MUST be true for ACCEPT. It MUST be the literal JSON boolean true or false - NOT
+  a verdict sentence like "Strong - US-based food manufacturer..." or "Yes, clearly a match."
+  Put any explanation in "reason" instead; scope_match itself must be exactly true or false.
+- is_us_based MUST also be the literal JSON boolean true or false, for the same reason.
+- food_beverage_connection must explicitly describe the verified relevance to an accepted
+  product area (food, beverage, ingredients, supplements, protein, sports nutrition,
+  meal replacement, functional nutrition, vitamins/minerals, snack and nutrition products).
+- qualifying_supplier_types must contain at least one of the review-UI categories:
+  Co-Manufacturer, Co-Packer, Private Label Manufacturer, Contract R&D / Formulation,
+  Ingredient Supplier, Packaging Supplier, 3PL / Fulfillment, Food Manufacturer / Brand,
+  Distributor / Wholesaler.
+  Equipment / Services is NOT accepted - do not use it to justify an ACCEPT.
+  Map a generic role onto the closest UI category (a "contract manufacturer" is
+  Co-Manufacturer; a plain "supplier" of ingredients is Ingredient Supplier).
+- supply_country should be your best single-country judgement whenever non-US evidence exists.
+  An uncertain or unconfirmed country is NEVER a reason to REJECT an otherwise in-scope
+  manufacturer, supplier, or co-packer - note the uncertainty in supply_origin_note instead.
+- supply_origin_note is REQUIRED and non-empty for ACCEPT when is_us_based is false, and MUST
+  say the company is outside the US and name the country (or say plainly that the exact
+  country could not be confirmed, if that is genuinely the case).
+- Being non-US is NOT a rejection reason.
+- If the company is outside the accepted product areas, set scope_match=false and
+  decision=REJECT even if it is a legitimate company.
+- For an out-of-scope company, do not propose any field corrections; return changes as [].
+- If the Country field is present and differs from the verified supply_country, propose a
+  country correction so the record shows the true origin.
+
+Rules for changes:
+- Only include an allowed field when it is PRESENT in the current record above AND the researched value differs.
+- A field that is present but EMPTY ("" or null) counts as present, and differs from any
+  researched value. Propose the verified value for it - filling verified blanks is wanted.
+- A field listed in "FIELDS AVAILABLE TO ADD" MAY be included, using the label shown there,
+  when research has verified a value for it. The agent will create the field and fill it.
+- If a field is neither in the current record nor in that list, NEVER include it in changes.
+- If new_value is null, DO NOT edit that field. The automation must never clear/delete a value automatically.
+- Do not make cosmetic formatting changes unless needed for correctness.
+- Do not include any other field in changes.
