@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class ReviewStoreError(RuntimeError):
@@ -211,7 +211,88 @@ _V1_STATEMENTS = (
 )
 
 # (target_version, statements): migrating to target_version from target-1.
-_MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _V1_STATEMENTS),)
+_V2_STATEMENTS = (
+    # Run lifecycle (the productization spec's run state machine): the run's
+    # current status plus the reason for the last non-running state, stamped
+    # on every status change. '' marks runs written before this column
+    # existed; the status event log below is the durable per-step history.
+    "ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE runs ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE runs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+    """
+    CREATE TABLE IF NOT EXISTS run_status_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL DEFAULT '',
+        from_status TEXT NOT NULL DEFAULT '',
+        to_status TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    # Operator command mailbox (pause/cancel requested while the runner is
+    # between records). One row per run; the runner's boundary poll reads
+    # AND clears it in one transaction.
+    """
+    CREATE TABLE IF NOT EXISTS run_commands (
+        run_id TEXT PRIMARY KEY,
+        command TEXT NOT NULL DEFAULT '',
+        requested_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    # Research ledger: one row per record the run DECIDED (verdict submitted,
+    # held, or flagged for manual review), written at the same boundary the
+    # runner advances its budget. A record served again after a crash or a
+    # pause is answered from this table instead of a new research round-trip:
+    # no decided record is ever re-researched within a run. result_json holds
+    # the full validated research result; tally_json snapshots the runner's
+    # decision tally so a resumed run replays summaries exactly.
+    """
+    CREATE TABLE IF NOT EXISTS research_ledger (
+        ledger_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL DEFAULT '',
+        record_key TEXT NOT NULL DEFAULT '',
+        record_id TEXT NOT NULL DEFAULT '',
+        company_name TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT '',
+        decision TEXT NOT NULL DEFAULT '',
+        result_json TEXT NOT NULL DEFAULT '{}',
+        tally_json TEXT NOT NULL DEFAULT '{}',
+        finalized INTEGER NOT NULL DEFAULT 1,
+        processed_after INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT '',
+        UNIQUE(run_id, record_key)
+    )
+    """,
+    # Paste-box requests (the dashboard's awaiting_manual flow): the prompt
+    # is surfaced here, the operator's pasted raw response is stored, and
+    # status tracks pending -> answered -> consumed so a response is picked
+    # up exactly once. One pending request per run at a time.
+    """
+    CREATE TABLE IF NOT EXISTS manual_requests (
+        request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL DEFAULT '',
+        record_id TEXT NOT NULL DEFAULT '',
+        company_name TEXT NOT NULL DEFAULT '',
+        prompt TEXT NOT NULL DEFAULT '',
+        raw_response TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT '',
+        answered_at TEXT NOT NULL DEFAULT '',
+        consumed_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_run_status_run ON run_status_events(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_ledger_run ON research_ledger(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_ledger_key ON research_ledger(record_key)",
+    "CREATE INDEX IF NOT EXISTS idx_manual_requests_run ON manual_requests(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_manual_requests_status ON manual_requests(status)",
+)
+
+_MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (1, _V1_STATEMENTS),
+    (2, _V2_STATEMENTS),
+)
 
 
 def connect(

@@ -15,7 +15,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from review_hub.config import (
     CLIPBOARD_AUTO_WATCH,
@@ -23,7 +23,7 @@ from review_hub.config import (
     CLIPBOARD_WATCH_TIMEOUT,
     LAST_REQUEST_FILE,
 )
-from review_hub.engine.research import LLMError
+from review_hub.engine.research import LLMError, ManualPauseRequested
 from review_hub.jsonutil import extract_first_json_value
 
 try:  # pyperclip is optional; the saved file fallback still works without it.
@@ -223,3 +223,61 @@ class ManualChatGPTBackend:
         if result is None:
             raise ResearchAborted("No usable research result was provided.")
         return result
+
+
+# --------------------------------------------------------------------------- #
+# Paste box (the dashboard's awaiting_manual flow)
+# --------------------------------------------------------------------------- #
+class ManualResponseGate(Protocol):
+    """Where a paste-box backend reads the operator's pasted raw response.
+
+    ``take_response()`` returns the raw pasted text, or None while the run
+    should park in ``awaiting_manual``. Implementations keep the consume-once
+    semantics (an answered response is returned exactly once) - see the
+    store-backed :class:`review_hub.lifecycle.StoreManualGate`.
+    """
+
+    def take_response(self) -> str | None: ...
+
+
+class PasteBoxBackend:
+    """Manual ChatGPT through a paste box instead of the clipboard watch.
+
+    The web control plane's replacement for the clipboard loop (same manual
+    ChatGPT workflow, same zero-paid-resource posture): when research runs,
+    the backend first checks the gate for an operator-pasted response. With
+    none yet it raises :class:`ManualPauseRequested`, which the BatchRunner
+    turns into an ``awaiting_manual`` park with this prompt surfaced; the
+    operator pastes ChatGPT's raw response and the resumed run parses it here
+    - through the same JSON-leak cleaning guard the clipboard flow uses, so
+    prose, markdown fences, and trailing chatter around the JSON are handled
+    identically. A paste that still yields no decision object parks the run
+    again with the reason attached (an input error is not a research failure;
+    no failure counter moves and the operator can simply re-paste).
+    """
+
+    def __init__(self, gate: ManualResponseGate) -> None:
+        self._gate = gate
+
+    def research(
+        self,
+        prompt: str,
+        system_prompt: str,
+        *,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del system_prompt, extra_fields  # ChatGPT gets the rulebook in the prompt itself
+        raw = self._gate.take_response()
+        if raw is None:
+            raise ManualPauseRequested(prompt)
+        try:
+            value = extract_first_json_value(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ManualPauseRequested(
+                prompt, detail=f"the pasted response was not usable: {exc}"
+            ) from exc
+        if not (isinstance(value, dict) and "decision" in value):
+            raise ManualPauseRequested(
+                prompt, detail="the pasted response contained no decision object"
+            )
+        return value

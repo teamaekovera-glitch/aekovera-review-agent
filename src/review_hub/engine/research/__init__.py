@@ -20,6 +20,23 @@ class QuotaExhausted(LLMError):
     """Raised when every model in the chain is rate limited or out of quota."""
 
 
+class ManualPauseRequested(Exception):
+    """A manual (paste-box) backend needs the operator's ChatGPT response.
+
+    The runner parks the run in ``awaiting_manual`` with the prompt surfaced,
+    and the operator's pasted raw response arrives through the backend's gate
+    on resume. Deliberately NOT an ``LLMError``: an unanswered paste is not a
+    research failure - the run is parked, not failed, and no failure counter
+    moves. ``prompt`` is the full research prompt to surface in the paste box;
+    ``detail`` carries why a previous paste was rejected, if it was.
+    """
+
+    def __init__(self, prompt: str, *, detail: str = "") -> None:
+        super().__init__(detail or "waiting for the operator's pasted ChatGPT response")
+        self.prompt = prompt
+        self.detail = detail
+
+
 @runtime_checkable
 class ResearchBackend(Protocol):
     """Anything that can run one research prompt to a JSON object."""
