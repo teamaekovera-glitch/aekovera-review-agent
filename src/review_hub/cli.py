@@ -1,0 +1,181 @@
+"""Interactive CLI - the thin human-facing wrapper around BatchRunner.
+
+Choosers, the manual login gate, and the browser session live here; every
+decision the pipeline makes lives in review_hub.engine.runner. The legacy
+main() flow is preserved: mode choice, backend choice (manual is the
+DEFAULT), run count, ChatGPT-Project setup note, browser login prompt, then
+the batch loop.
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from typing import Any
+
+from review_hub.config import (
+    BASE_URL,
+    CHATGPT_PROJECT_MODE,
+    RESEARCH_BACKEND,
+    RUN_LOG_DIR,
+)
+from review_hub.engine.corrections import CorrectionApplier
+from review_hub.engine.prompting import build_research_prompt
+from review_hub.engine.research import LLMError
+from review_hub.engine.research.manual import ManualChatGPTBackend
+from review_hub.engine.research.openrouter import OpenRouterClient
+from review_hub.engine.runner import BatchRunner, PageOps
+from review_hub.engine.session import open_review_page, open_session, transport_ready_banner
+from review_hub.engine.transport import QAClient
+from review_hub.persistence import FileTransitionSink, NullSink
+
+
+def choose_mode() -> str | None:
+    """Auto mode (agent clicks the verdict) or approval mode (human does)."""
+    print("\n" + "=" * 42)
+    print("            REVIEW RUN MODE")
+    print("=" * 42)
+    print("1. Auto mode      (agent submits verdicts; holds skip instead)")
+    print("2. Approval mode  (agent prepares; human clicks every verdict)")
+    value = input("Select mode [1]: ").strip()
+    if value in ("", "1"):
+        return "auto"
+    if value == "2":
+        return "approval"
+    print("Enter 1 or 2.")
+    return None
+
+
+def choose_backend(default: str = RESEARCH_BACKEND) -> str:
+    print("\n" + "=" * 42)
+    print("            RESEARCH BACKEND")
+    print("=" * 42)
+    print("1. OpenRouter API  (automated - free models only, no copy/paste)")
+    print("2. Manual ChatGPT  (clipboard workflow - the default)")
+    print("=" * 42)
+    while True:
+        value = input(f"Select backend [{'1' if default == 'api' else '2'}]: ").strip()
+        if value == "":
+            return default
+        if value == "1":
+            return "api"
+        if value == "2":
+            return "manual"
+        print("Enter 1 or 2.")
+
+
+def preflight_api(backend: OpenRouterClient) -> bool:
+    """Verify the key is present before any browser work starts."""
+    try:
+        backend.check_api_key()
+    except LLMError as exc:
+        print(f"\n✗ {exc}")
+        return False
+    print("✓ OPENROUTER_API_KEY is set.")
+    return True
+
+
+def choose_run_count() -> int | None:
+    value = input("\nHow many records this run? [1]: ").strip()
+    if value == "":
+        return 1
+    try:
+        count = int(value)
+    except ValueError:
+        print("Enter a number (or ENTER for 1).")
+        return None
+    return count if count > 0 else None
+
+
+def build_backend(name: str) -> Any:
+    if name == "api":
+        return OpenRouterClient()
+    return ManualChatGPTBackend()
+
+
+def default_sink():
+    """Persist transitions to the JSONL run log when the directory is writable."""
+    try:
+        return FileTransitionSink(f"{RUN_LOG_DIR}/transitions.jsonl")
+    except OSError:
+        return NullSink()
+
+
+def main() -> None:
+    mode = choose_mode()
+    if mode is None:
+        return
+
+    backend_name = choose_backend()
+    backend = build_backend(backend_name)
+    if backend_name == "api" and not preflight_api(backend):
+        print("Cannot start the automated backend. Fix the API key and retry.")
+        return
+
+    run_count = choose_run_count()
+    if run_count is None:
+        print("Run cancelled.")
+        return
+
+    if backend_name == "manual" and CHATGPT_PROJECT_MODE:
+        print(
+            "\nNOTE: ChatGPT Project mode is on. The manual backend builds "
+            "compact prompts (rules live in your Project instructions)."
+        )
+
+    print(f"\nMODE: {mode.upper()}")
+    print(f"BACKEND: {'openrouter' if backend_name == 'api' else 'manual chatgpt'}")
+    print(f"Run count: {run_count} records")
+    print(f"Session started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    with open_session() as context:
+        transport = QAClient(context, base_url=BASE_URL)
+        print(transport_ready_banner(BASE_URL))
+
+        page = open_review_page(context)
+        print("\nBrowser opened.")
+        print("Log in manually if necessary.")
+        input("When the supplier review page is visible, press ENTER...")
+
+        def build_prompt(record: dict) -> str:
+            # ChatGPT does the research itself in manual mode, so the
+            # rulebook must not tell it that it has no browsing.
+            return build_research_prompt(record, browsing=True)
+
+        ops = PageOps(transport=transport, applier=CorrectionApplier(transport=transport))
+        runner = BatchRunner(
+            ops=ops,
+            backend=backend,
+            sink=default_sink(),
+            mode=mode,
+            build_prompt=build_prompt,
+        )
+        summary = runner.run(page, run_count)
+
+        print("\n" + "=" * 50)
+        print("Session finished.")
+        print(f"Records processed : {summary['processed']}")
+        print(f"Repeat passes     : {summary['repeat_passes_total']}")
+        print(f"Time used         : {summary['elapsed_s']:.0f}s")
+        for key, count in sorted(summary["decision_tally"].items(), key=lambda kv: -kv[1]):
+            print(f"   {count:>3}  {key}")
+        print(transport.summary())
+        for warning in transport.health_warnings():
+            print(f"⚠ {warning}")
+        print("=" * 50)
+
+
+def run() -> None:
+    """Entry point wrapper: exit cleanly on Ctrl+C."""
+    start = time.time()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted.")
+        print(f"Time used before interrupt: {time.time() - start:.0f}s")
+        print("No further action was performed.")
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    run()
