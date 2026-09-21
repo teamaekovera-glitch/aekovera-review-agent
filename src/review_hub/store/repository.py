@@ -88,11 +88,12 @@ class ReviewStore:
         *,
         connection_factory: type[sqlite3.Connection] | None = None,
         clock: Any = None,
+        check_same_thread: bool = True,
     ) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._conn = connect(self._path, factory=connection_factory)
+        self._conn = connect(self._path, factory=connection_factory, check_same_thread=check_same_thread)
         ensure_schema(self._conn)
 
     @property
@@ -206,6 +207,32 @@ class ReviewStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def runs(self) -> list[dict[str, Any]]:
+        """All runs, newest first, with decoded tally/summary (dashboard list)."""
+        rows = self._conn.execute(
+            "SELECT * FROM runs ORDER BY started_at DESC, run_id"
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["decision_tally"] = json.loads(item.pop("decision_tally_json") or "{}")
+            item["summary"] = json.loads(item.pop("summary_json") or "{}")
+            out.append(item)
+        return out
+
+    def transitions(self, run_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        """A run's transition history, newest first (the dashboard's live feed)."""
+        rows = self._conn.execute(
+            "SELECT * FROM transitions WHERE run_id = ? ORDER BY transition_id DESC LIMIT ?",
+            (flatten_text(run_id), int(limit)),
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["meta"] = json.loads(item.pop("meta_json") or "{}")
+            out.append(item)
+        return out
+
     # ------------------------------------------------------------------ #
     # Operator command mailbox (pause/cancel between records)
     # ------------------------------------------------------------------ #
@@ -312,6 +339,30 @@ class ReviewStore:
             "SELECT * FROM research_ledger WHERE run_id = ? ORDER BY ledger_id",
             (flatten_text(run_id),),
         ).fetchall()
+        return self._ledger_dicts(rows)
+
+    def ledger_rows(
+        self, run_id: str | None = None, *, finalized: bool | None = None
+    ) -> list[dict[str, Any]]:
+        """Ledger rows newest first, optionally scoped to a run and/or finalized.
+
+        The dashboard's per-record feed and the cross-run decisions queue read
+        through this: the same rows crash recovery replays, in reverse order.
+        """
+        clauses, params = [], []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(flatten_text(run_id))
+        if finalized is not None:
+            clauses.append("finalized = ?")
+            params.append(1 if finalized else 0)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM research_ledger{where} ORDER BY ledger_id DESC", params
+        ).fetchall()
+        return self._ledger_dicts(rows)
+
+    def _ledger_dicts(self, rows: Sequence[sqlite3.Row]) -> list[dict[str, Any]]:
         out = []
         for row in rows:
             item = dict(row)
