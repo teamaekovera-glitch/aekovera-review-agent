@@ -1,0 +1,36 @@
+<!doctype html>
+{# Base layout: self-contained (no CDN, no external fonts, no analytics).
+   The dashboard fully works on localhost without internet. #}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Review Hub{% endblock %} · Aekovera Review Hub</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+</head>
+<body data-page="{% block page %}{% endblock %}" {% block bodyattrs %}{% endblock %}>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">Ae</span>
+      <span class="brand-name">Aekovera Review Hub</span>
+    </div>
+    <nav class="nav">
+      <a href="/dashboard" {% if request.url.path == '/dashboard' or request.url.path == '/dashboard/' %}class="active"{% endif %}>Overview</a>
+      <a href="/dashboard/queues" {% if request.url.path.startswith('/dashboard/queues') %}class="active"{% endif %}>Queues</a>
+      <a href="/dashboard/history" {% if request.url.path.startswith('/dashboard/history') %}class="active"{% endif %}>History</a>
+      <a href="/dashboard/accepted" {% if request.url.path.startswith('/dashboard/accepted') %}class="active"{% endif %}>Accepted</a>
+      <a href="/dashboard/audit" {% if request.url.path.startswith('/dashboard/audit') %}class="active"{% endif %}>Audit</a>
+      <a href="/dashboard/settings" {% if request.url.path.startswith('/dashboard/settings') %}class="active"{% endif %}>Settings</a>
+    </nav>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="foot">
+    <span>Local-first control plane &mdash; bound to 127.0.0.1, no login in v1.</span>
+    <span>Exposing beyond this machine requires the access-token seam
+      (<code>REVIEW_HUB_ACCESS_TOKEN</code>) and a non-loopback bind; see the README.</span>
+  </footer>
+  <script src="/dashboard/static/dashboard.js" defer></script>
+</body>
+</html>

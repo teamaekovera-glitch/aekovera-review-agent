@@ -50,4 +50,8 @@ testpaths = ["tests"]
 review-hub = "review_hub.cli:run"
 
 [tool.setuptools.package-data]
-review_hub = ["engine/prompts/*.md"]
+review_hub = [
+    "engine/prompts/*.md",
+    "server/templates/*.html",
+    "server/static/*",
+]
