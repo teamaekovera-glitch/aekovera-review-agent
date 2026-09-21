@@ -8,7 +8,7 @@ verdict state before every read. Cards are decided exactly once, so a
 resumed worker (new session, same app) advances past already-decided cards
 instead of serving them again.
 
-The HTTP surface reuses ``FakeQAApp`` from tests.test_pipeline (the same
+The HTTP surface reuses ``FakeQAApp`` from ``test_pipeline`` (the same
 in-memory QA app QAClient tests run against).
 """
 
@@ -18,7 +18,7 @@ import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from tests.test_pipeline import FakeQAApp
+from test_pipeline import FakeQAApp
 
 _NAME_RE = re.compile(r"name='([^']+)'")
 _VALUE_RE = re.compile(r"value='([^']*)'")
