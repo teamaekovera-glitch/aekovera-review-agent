@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block page %}run{% endblock %}
+{% block bodyattrs %}data-run-id="{{ run.run_id }}"{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/dashboard">&larr; All runs</a></p>
+<h1>Run <code>{{ run.run_id }}</code></h1>
+
+<section class="card" id="run-head">
+  <div class="card-head">
+    <h2>
+      <span class="badge badge-{{ run.status }}" id="run-status">{{ run.status }}</span>
+      <span class="muted" id="run-mode">{{ run.mode }}</span>
+      <span class="muted" id="run-worker">
+        {% if run.thread_alive %}worker live{% elif run.adopted %}adopted (no live worker){% endif %}
+      </span>
+    </h2>
+    <div class="btn-row" id="run-controls">
+      <button class="btn" data-cmd="pause">Pause</button>
+      <button class="btn" data-cmd="resume">Resume</button>
+      <button class="btn btn-danger" data-cmd="cancel">Cancel</button>
+    </div>
+  </div>
+  <p class="muted" id="run-reason">{{ run.status_reason }}</p>
+  <div class="progress-card">
+    <div class="progress-line"><span id="progress-text">{{ run.processed }} / {{ run.run_count }} records</span>
+      <span id="run-tally" class="muted">
+        {% for decision, count in run.decision_tally.items() %}{{ decision }} {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}
+      </span>
+    </div>
+    <div class="bar"><div class="bar-fill" id="progress-bar"
+      style="width: {% if run.run_count %}{{ (run.processed / run.run_count * 100) | round(0, 'floor') }}{% else %}0{% endif %}%"></div></div>
+  </div>
+</section>
+
+{# The operator's primary loop: prompt surfaced, paste box, invalid-paste
+   re-park shown clearly, record resumes visibly. #}
+<section class="card paste-card" id="paste-box" {% if not run.manual_request or not run.manual_request.pending %}hidden{% endif %}>
+  <h2>Manual research &mdash; paste ChatGPT's response</h2>
+  <div id="paste-error" class="banner banner-error" {% if not run.manual_request or not run.manual_request.error %}hidden{% endif %}>
+    <strong>The last paste was not used.</strong>
+    <span id="paste-error-text">{{ run.manual_request.error if run.manual_request else '' }}</span>
+    The run re-parked in <code>awaiting_manual</code>: no failure was counted,
+    nothing was finalized. Check the response and paste it again below.
+  </div>
+  <p><strong>Record:</strong> <span id="paste-record">{{ run.manual_request.record_id if run.manual_request }}</span>
+     &mdash; <span id="paste-company">{{ run.manual_request.company_name if run.manual_request }}</span></p>
+  <p class="hint">1. Copy the research prompt below into ChatGPT. 2. Copy ChatGPT's raw
+    response (prose around the JSON is fine). 3. Paste it here &mdash; the run resumes
+    by itself.</p>
+  <div class="prompt-box">
+    <div class="prompt-head">
+      <span>Research prompt</span>
+      <button class="btn btn-small" id="copy-prompt" type="button">Copy prompt</button>
+    </div>
+    <pre id="paste-prompt">{{ run.manual_request.prompt if run.manual_request }}</pre>
+  </div>
+  <form id="paste-form">
+    <textarea id="paste-input" rows="8" placeholder="Paste ChatGPT's raw response here..." required></textarea>
+    <div class="row-form">
+      <button type="submit" class="btn btn-primary" id="paste-submit">Submit response</button>
+      <span id="paste-status" class="hint" role="status"></span>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Records</h2>
+  <table class="grid" id="records-table">
+    <thead><tr><th>Record</th><th>Company</th><th>Kind</th><th>Decision</th><th>Finalized</th><th>#</th><th>When</th></tr></thead>
+    <tbody id="records-body">
+      {% for rec in run.records %}
+      <tr>
+        <td><a href="/dashboard/audit/{{ rec.record_id }}"><code>{{ rec.record_id }}</code></a></td>
+        <td>{{ rec.company_name }}</td>
+        <td>{{ rec.kind }}</td>
+        <td><span class="badge badge-decision-{{ rec.decision | lower }}">{{ rec.decision or '&mdash;' }}</span></td>
+        <td>{% if rec.finalized %}&#10003;{% else %}&hellip;{% endif %}</td>
+        <td>{{ rec.processed_after }}</td>
+        <td class="muted">{{ rec.recorded_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">No records yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Status events</h2>
+  <ul class="events" id="events-list">
+    {% for ev in run.status_events %}
+    <li><span class="badge badge-{{ ev.status }}">{{ ev.status }}</span>
+      <span class="muted">{{ ev.created_at }}</span> {{ ev.reason }}</li>
+    {% else %}
+    <li class="empty">No events.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block page %}settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<section class="card">
+  <h2>Credentials</h2>
+  <table class="grid" id="settings-secrets">
+    <thead><tr><th>Key</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for name in secrets %}
+      {% set v = values[name] %}
+      <tr>
+        <td><code>{{ name }}</code></td>
+        <td>
+          {# Presence only - the secret's value is never sent to the UI. #}
+          <span class="badge {% if v and v.configured %}badge-green{% else %}badge-gray{% endif %}">
+            {% if v and v.configured %}configured in environment{% else %}not configured{% endif %}
+          </span>
+          <span class="muted">(set it in the environment, never via the API)</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Engine configuration</h2>
+  <p class="hint">These are the engine's operational knobs, editable through the API's
+    strict allowlist (typed values; no paths, no URLs, no credentials). Changes apply to
+    the running process immediately and persist next to the SQLite store for the next
+    boot. Secrets are set in the environment only &mdash; they are never echoed here.</p>
+  <form id="settings-form">
+    <table class="grid" id="settings-table">
+      <thead><tr><th>Key</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for key in keys %}
+        {% set v = values[key] %}
+        <tr data-key="{{ key }}">
+          <td><code>{{ key }}</code></td>
+          <td class="setting-value">
+            {% if v is mapping and 'configured' in v %}
+              {# Secret presence badge - the value itself is never sent to the UI. #}
+              <span class="badge {% if v.configured %}badge-green{% else %}badge-gray{% endif %}">
+                {% if v.configured %}configured in environment{% else %}not configured{% endif %}
+              </span>
+              <span class="muted">(set via the environment, never via the API)</span>
+            {% elif v is boolean %}
+              <input type="checkbox" name="{{ key }}" {% if v %}checked{% endif %}>
+            {% elif v is number %}
+              <input type="number" step="any" name="{{ key }}" value="{{ v }}">
+            {% elif v is sequence and v is not string %}
+              <input type="text" name="{{ key }}" value="{{ v | join(', ') }}" class="grow">
+              <span class="muted">(comma-separated)</span>
+            {% else %}
+              <input type="text" name="{{ key }}" value="{{ v }}" class="grow">
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="row-form">
+      <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
+      <span id="settings-status" class="hint" role="status"></span>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Posture</h2>
+  <p class="hint">Local-first (locked decision): the server binds 127.0.0.1 and there is
+    no login in v1 &mdash; this machine is the trust boundary. If the dashboard is ever
+    opened beyond loopback, set <code>REVIEW_HUB_ACCESS_TOKEN</code> before any
+    non-loopback bind; every request will then be required to present that token
+    (see <code>server/auth.py</code> and the README).</p>
+</section>
+{% endblock %}

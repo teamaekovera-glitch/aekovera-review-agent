@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Queues{% endblock %}
+{% block page %}queues{% endblock %}
+{% block content %}
+<h1>Queues</h1>
+<p class="hint">Open holds across all runs. Resolving archives the item with the note
+  (the outcome is kept as a <code>[outcome]</code> prefix) via the same API the runner reads.</p>
+
+{% for section in sections %}
+<section class="card">
+  <div class="card-head">
+    <h2>{{ section.title }}</h2>
+    <span class="count-pill">{{ section.holds | length }}</span>
+  </div>
+  <div class="hold-list" data-queue="{{ section.queue }}" data-kind-holds>
+    {% for hold in section.holds %}
+    <article class="hold" data-hold-id="{{ hold.hold_id }}">
+      <header>
+        <strong>{{ hold.company_name }}</strong>
+        <span class="muted">record <code>{{ hold.record_id }}</code></span>
+        <span class="muted">{{ hold.created_at }}</span>
+      </header>
+      {% if hold.detail %}
+      <p class="hold-reason"><span class="reason-label">Reason:</span> {{ hold.detail }}</p>
+      {% endif %}
+      {% if hold.kind == 'field_hold' and hold.detail %}
+      <div class="hold-reason">
+        <span class="reason-label">Held fields:</span>
+        {% for item in hold.detail.needs_clear %}
+        <span class="chip chip-warn">{{ item[0] }}: {{ item[1] }} (needs clear)</span>
+        {% endfor %}
+        {% for item in hold.detail.needs_review %}
+        <span class="chip">{{ item[0] }}: {{ item[1] }} (needs review)</span>
+        {% endfor %}
+        {% for item in hold.detail.identity_renamed %}
+        <span class="chip chip-warn">{{ item[0] }}: {{ item[1] }} (renamed)</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <form class="row-form resolve-form" data-queue="{{ section.queue }}" data-hold-id="{{ hold.hold_id }}">
+        <label>Outcome
+          <select name="outcome">
+            <option value="">(none)</option>
+            <option value="accepted">accepted</option>
+            <option value="rejected">rejected</option>
+            <option value="needs_work">needs_work</option>
+          </select>
+        </label>
+        <label class="grow">Note
+          <input type="text" name="note" placeholder="Why this is resolved...">
+        </label>
+        <button type="submit" class="btn btn-primary">Resolve</button>
+        <span class="form-error" hidden></span>
+      </form>
+    </article>
+    {% else %}
+    <p class="empty">Nothing waiting &mdash; this queue is clear.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

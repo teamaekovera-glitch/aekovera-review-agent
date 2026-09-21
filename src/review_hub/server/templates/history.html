@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block page %}history{% endblock %}
+{% block content %}
+<h1>Supplier history</h1>
+
+<section class="card">
+  <h2>Exports</h2>
+  <p class="hint">The v34-parity artifacts, generated fresh per request from the store.</p>
+  <div class="btn-row" id="export-links">
+    {% for e in exports %}
+    <a class="btn btn-small" href="{{ e.href }}" download>{{ e.name }}</a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>History <span class="count-pill">{{ history | length }}</span></h2>
+  <table class="grid" id="history-table">
+    <thead><tr><th>Company</th><th>Record</th><th>Outcome</th><th>Times seen</th><th>First seen</th><th>Last seen</th></tr></thead>
+    <tbody id="history-body">
+      {% for row in history %}
+      <tr>
+        <td>{{ row.company_name }}</td>
+        <td><a href="/dashboard/audit/{{ row.record_id }}"><code>{{ row.record_id }}</code></a></td>
+        <td><span class="badge badge-decision-{{ (row.outcome_view or '') | lower }}">{{ row.outcome_view or '&mdash;' }}</span></td>
+        <td>{{ row.times_seen }}</td>
+        <td class="muted">{{ row.first_seen }}</td>
+        <td class="muted">{{ row.last_seen }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No history yet &mdash; finalize a record first.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Audit{% endblock %}
+{% block page %}audit{% endblock %}
+{% block content %}
+<h1>Audit inspector</h1>
+
+<section class="card">
+  <form method="get" action="/dashboard/audit" class="row-form">
+    <label class="grow">Record ID
+      <input type="text" name="record_id" value="{{ record_id }}" placeholder="e.g. MST-2001">
+    </label>
+    <button type="submit" class="btn btn-primary">Inspect</button>
+  </form>
+</section>
+
+{% if record_id %}
+<section class="card">
+  <h2>Audit events <span class="count-pill">{{ events | length }}</span></h2>
+  <table class="grid" id="audit-events">
+    <thead><tr><th>#</th><th>Kind</th><th>When</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for ev in events %}
+      <tr>
+        <td>{{ ev.event_id }}</td>
+        <td><span class="badge badge-gray">{{ ev.kind }}</span></td>
+        <td class="muted">{{ ev.created_at }}</td>
+        <td><pre class="audit-detail">{{ ev.detail }}</pre></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No audit events for <code>{{ record_id }}</code>.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Evidence <span class="count-pill">{{ evidence | length }}</span></h2>
+  <table class="grid" id="audit-evidence">
+    <thead><tr><th>Label</th><th>URL</th><th>When</th><th>Content</th></tr></thead>
+    <tbody>
+      {% for ev in evidence %}
+      <tr>
+        <td>{{ ev.label }}</td>
+        <td class="muted">{{ ev.url }}</td>
+        <td class="muted">{{ ev.created_at }}</td>
+        <td><pre class="audit-detail">{{ ev.content }}</pre></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No evidence collected for <code>{{ record_id }}</code>.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<section class="card">
+  <p class="hint">Enter a record ID above to inspect its audit trail: the research prompt,
+    the raw response, website checks, and the evidence the engine collected.</p>
+</section>
+{% endif %}
+{% endblock %}

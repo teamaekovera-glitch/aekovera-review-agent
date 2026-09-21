@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Accepted companies{% endblock %}
+{% block page %}accepted{% endblock %}
+{% block content %}
+<h1>Accepted companies</h1>
+
+<section class="card">
+  <h2>Exports</h2>
+  <div class="btn-row" id="export-links">
+    {% for e in exports %}
+    <a class="btn btn-small" href="{{ e.href }}" download>{{ e.name }}</a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Accepted <span class="count-pill">{{ accepted | length }}</span></h2>
+  <table class="grid" id="accepted-table">
+    <thead><tr><th>Company</th><th>Record</th><th>Verdict status</th><th>Edit status</th><th>Confirmed by</th><th>Times</th><th>First accepted</th></tr></thead>
+    <tbody id="accepted-body">
+      {% for row in accepted %}
+      <tr>
+        <td><strong>{{ row.company_name }}</strong></td>
+        <td><a href="/dashboard/audit/{{ row.record_id }}"><code>{{ row.record_id }}</code></a></td>
+        <td><span class="badge badge-decision-accept">{{ row.verdict_status }}</span></td>
+        <td>{{ row.edit_status }}{% if row.fields_failed %} <span class="muted">({{ row.fields_failed }} failed)</span>{% endif %}</td>
+        <td class="muted">{{ row.confirmed_by or '&mdash;' }}</td>
+        <td>{{ row.times_accepted }}</td>
+        <td class="muted">{{ row.first_accepted }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">No accepted companies yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from review_hub.server import settings
 from review_hub.server.auth import AccessTokenMiddleware, configured_token
+from review_hub.server.dashboard import STATIC_DIR, make_dashboard_router
 from review_hub.server.routes import make_api_router, make_export_router
 from review_hub.server.runmanager import RunManager, engine_session
 from review_hub.store.exports import (
@@ -94,6 +96,7 @@ def create_app(
         app.state.manager = manager
         app.state.backend_names = tuple(manager.backend_names())
         app.state.settings_overrides_path = overrides_path
+        app.state.export_specs = EXPORT_SPECS
         logger.info("review hub ready (db=%s, adopted=%d)", db_path, len(adopted))
         yield
         manager.shutdown()
@@ -106,12 +109,17 @@ def create_app(
     )
     app.include_router(make_api_router())
     app.include_router(make_export_router(EXPORT_SPECS))
+    # The operator dashboard (additive): Jinja2 pages over the same JSON API.
+    # The API itself is untouched - see server/dashboard.py.
+    app.include_router(make_dashboard_router())
+    app.mount("/dashboard/static", StaticFiles(directory=STATIC_DIR), name="dashboard-static")
 
     @app.get("/")
     def index() -> dict[str, str]:
         return {
             "service": "aekovera-review-hub",
             "api": "/api",
+            "dashboard": "/dashboard",
             "exports": "/export/{name}",
             "posture": "localhost-only by default; set REVIEW_HUB_ACCESS_TOKEN "
             "and a non-loopback bind before exposing beyond this machine",
