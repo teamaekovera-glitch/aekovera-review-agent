@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest",
     "ruff==0.16.8",
+    # starlette.testclient requires the httpx2 package on current starlette
+    # releases; without it, plain pytest fails at conftest import time.
+    "httpx2",
 ]
 
 [tool.setuptools.packages.find]

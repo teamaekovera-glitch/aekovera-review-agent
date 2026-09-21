@@ -296,7 +296,8 @@ _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
 
 
 def connect(
-    path: str | Path, *, factory: type[sqlite3.Connection] | None = None
+    path: str | Path, *, factory: type[sqlite3.Connection] | None = None,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open the store with the lifecycle settings every caller needs.
 
@@ -304,8 +305,15 @@ def connect(
     :func:`transaction` controls transactions explicitly - partial writes
     stay impossible without implicit-transaction surprises. ``busy_timeout``
     lets a reader wait out an in-flight commit instead of erroring.
+    ``check_same_thread=False`` is for servers whose single store connection
+    outlives the thread that opened it (the driver still serializes access).
     """
-    conn = sqlite3.connect(str(path), isolation_level=None, **({"factory": factory} if factory else {}))
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        check_same_thread=check_same_thread,
+        **({"factory": factory} if factory else {}),
+    )
     conn.row_factory = sqlite3.Row  # repository reads do dict(row) - rows must name columns
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
