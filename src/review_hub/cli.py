@@ -9,6 +9,7 @@ the batch loop.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from typing import Any
@@ -93,12 +94,35 @@ def build_backend(name: str) -> Any:
     return ManualChatGPTBackend()
 
 
-def default_sink():
-    """Persist transitions to the JSONL run log when the directory is writable."""
+def default_jsonl_sink():
+    """The file-backed JSONL run log (kept for CLI/debug via configuration)."""
     try:
         return FileTransitionSink(f"{RUN_LOG_DIR}/transitions.jsonl")
     except OSError:
         return NullSink()
+
+
+def build_persistence():
+    """The BatchRunner's persistence layer: (sink, lifecycle).
+
+    The SQLite lifecycle store is the default - its transition sink writes
+    the same records the JSONL sink does, into the system of record, and the
+    RunLifecycle tracks the run's parked/resumed state there. The file-backed
+    JSONL sink stays available for CLI/debug via ``REVIEW_HUB_SINK=jsonl``,
+    and serves as the fallback when the store cannot be opened (never
+    silently: the fallback prints why).
+    """
+    from review_hub.lifecycle import RunLifecycle
+    from review_hub.store.repository import ReviewStore
+
+    if os.environ.get("REVIEW_HUB_SINK", "store").lower() == "jsonl":
+        return default_jsonl_sink(), None
+    try:
+        store = ReviewStore(f"{RUN_LOG_DIR}/review.db")
+    except Exception as exc:
+        print(f"⚠ SQLite store unavailable ({exc}); using the JSONL run log.")
+        return default_jsonl_sink(), None
+    return store.sink(), RunLifecycle(store)
 
 
 def main() -> None:
@@ -143,10 +167,12 @@ def main() -> None:
             return build_research_prompt(record, browsing=True)
 
         ops = PageOps(transport=transport, applier=CorrectionApplier(transport=transport))
+        sink, lifecycle = build_persistence()
         runner = BatchRunner(
             ops=ops,
             backend=backend,
-            sink=default_sink(),
+            sink=sink,
+            lifecycle=lifecycle,
             mode=mode,
             build_prompt=build_prompt,
         )

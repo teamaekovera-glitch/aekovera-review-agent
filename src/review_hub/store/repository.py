@@ -35,6 +35,7 @@ from review_hub.store.schema import (
     json_dumps,
     transaction,
 )
+from review_hub.store.sqlite_sink import SqliteTransitionSink
 
 # Meta-block columns stored as real history columns; the rest of the
 # HISTORY_META_COLUMNS block (first_seen/last_seen/times_seen/record_id/
@@ -109,7 +110,8 @@ class ReviewStore:
     # ------------------------------------------------------------------ #
     def record_run_start(self, run_id: str, *, mode: str = "", run_count: int = 0) -> None:
         self._conn.execute(
-            "INSERT INTO runs (run_id, mode, run_count, started_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO runs (run_id, mode, run_count, started_at, status) "
+            "VALUES (?, ?, ?, ?, 'queued') "
             "ON CONFLICT(run_id) DO UPDATE SET mode = excluded.mode, "
             "run_count = excluded.run_count",
             (flatten_text(run_id), flatten_text(mode), int(run_count), self._now()),
@@ -148,6 +150,263 @@ class ReviewStore:
         item["decision_tally"] = json.loads(item.pop("decision_tally_json") or "{}")
         item["summary"] = json.loads(item.pop("summary_json") or "{}")
         return item
+
+    def sink(self) -> SqliteTransitionSink:
+        """A transition sink sharing THIS store's connection.
+
+        The BatchRunner's persistence layer: transitions land in this store's
+        ``transitions`` table in the same shape the file-backed JSONL sink
+        writes, so the runner's whole history is in the system of record.
+        The sink never closes the connection it does not own.
+        """
+        return SqliteTransitionSink(connection=self._conn)
+
+    # ------------------------------------------------------------------ #
+    # Run status (the spec's run state machine, persisted per step)
+    # ------------------------------------------------------------------ #
+    def record_run_status(self, run_id: str, to_status: str, *, reason: str = "") -> str:
+        """Move the run to ``to_status`` and append a status event row.
+
+        One transaction: the runs row and its event log can never disagree.
+        Returns the status the run came from ('' for a run with none yet).
+        """
+        run_id = flatten_text(run_id)
+        to_status = flatten_text(to_status)
+        with transaction(self._conn):
+            row = self._conn.execute(
+                "SELECT status FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ReviewStoreError(f"unknown run {run_id!r}")
+            from_status = flatten_text(row["status"])
+            now = self._now()
+            self._conn.execute(
+                "UPDATE runs SET status = ?, status_reason = ?, updated_at = ? WHERE run_id = ?",
+                (to_status, flatten_text(reason), now, run_id),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO run_status_events (run_id, from_status, to_status, reason, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, from_status, to_status, flatten_text(reason), now),
+            )
+        return from_status
+
+    def run_status(self, run_id: str) -> str:
+        row = self._conn.execute(
+            "SELECT status FROM runs WHERE run_id = ?", (flatten_text(run_id),)
+        ).fetchone()
+        return flatten_text(row["status"]) if row else ""
+
+    def run_status_events(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM run_status_events WHERE run_id = ? ORDER BY event_id",
+            (flatten_text(run_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Operator command mailbox (pause/cancel between records)
+    # ------------------------------------------------------------------ #
+    def request_run_command(self, run_id: str, command: str) -> None:
+        """Queue a command for the runner's next safe-boundary poll."""
+        self._conn.execute(
+            """
+            INSERT INTO run_commands (run_id, command, requested_at) VALUES (?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET command = excluded.command,
+                                              requested_at = excluded.requested_at
+            """,
+            (flatten_text(run_id), flatten_text(command), self._now()),
+        )
+
+    def poll_run_command(self, run_id: str) -> str | None:
+        """Read and clear the run's queued command. One poll wins per command."""
+        with transaction(self._conn):
+            row = self._conn.execute(
+                "SELECT command FROM run_commands WHERE run_id = ?", (flatten_text(run_id),)
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "DELETE FROM run_commands WHERE run_id = ?", (flatten_text(run_id),)
+            )
+        command = flatten_text(row["command"])
+        return command or None
+
+    # ------------------------------------------------------------------ #
+    # Research ledger: the durable record of what this run already decided
+    # ------------------------------------------------------------------ #
+    def record_research(
+        self,
+        run_id: str,
+        record_id: str,
+        company_name: str,
+        *,
+        kind: str,
+        decision: str,
+        result: Mapping[str, Any],
+        tally: Mapping[str, Any] | None = None,
+        finalized: bool = True,
+        processed_after: int = 0,
+    ) -> None:
+        """Upsert the run's decision for one record (the resume source of truth)."""
+        self._conn.execute(
+            """
+            INSERT INTO research_ledger (run_id, record_key, record_id, company_name, kind,
+                                         decision, result_json, tally_json, finalized,
+                                         processed_after, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, record_key) DO UPDATE SET
+                record_id = excluded.record_id,
+                company_name = excluded.company_name,
+                kind = excluded.kind,
+                decision = excluded.decision,
+                result_json = excluded.result_json,
+                tally_json = excluded.tally_json,
+                finalized = excluded.finalized,
+                processed_after = excluded.processed_after,
+                created_at = excluded.created_at
+            """,
+            (
+                flatten_text(run_id),
+                dedupe_key(record_id, company_name),
+                flatten_text(record_id),
+                flatten_text(company_name),
+                flatten_text(kind),
+                flatten_text(decision),
+                json_dumps(dict(result)),
+                json_dumps(dict(tally or {})),
+                1 if finalized else 0,
+                int(processed_after),
+                self._now(),
+            ),
+        )
+
+    def research_decision(
+        self, run_id: str, record_id: str, company_name: str
+    ) -> dict[str, Any] | None:
+        """The run's persisted FINAL decision for a record (None if undecided).
+
+        Only finalized rows count (verdict submitted or held): a manual-review
+        flag is not a decision - the operator decides that record fresh.
+        """
+        key = dedupe_key(record_id, company_name)
+        if not key:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM research_ledger WHERE run_id = ? AND record_key = ? "
+            "AND finalized = 1",
+            (flatten_text(run_id), key),
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["result"] = json.loads(item.pop("result_json") or "{}")
+        item["tally"] = json.loads(item.pop("tally_json") or "{}")
+        return item
+
+    def research_rows(self, run_id: str) -> list[dict[str, Any]]:
+        """All ledger rows for a run, in decision order (crash recovery)."""
+        rows = self._conn.execute(
+            "SELECT * FROM research_ledger WHERE run_id = ? ORDER BY ledger_id",
+            (flatten_text(run_id),),
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["result"] = json.loads(item.pop("result_json") or "{}")
+            item["tally"] = json.loads(item.pop("tally_json") or "{}")
+            out.append(item)
+        return out
+
+    def count_transitions(self, run_id: str, *, outcome: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM transitions WHERE run_id = ? AND outcome = ?",
+            (flatten_text(run_id), flatten_text(outcome)),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    # ------------------------------------------------------------------ #
+    # Manual paste-box requests (the awaiting_manual flow)
+    # ------------------------------------------------------------------ #
+    def open_manual_request(
+        self, run_id: str, record_id: str, company_name: str, prompt: str, *, error: str = ""
+    ) -> int:
+        """Surface a research prompt for pasting. One pending request per run.
+
+        A previous pending request is cancelled (superseded), never an
+        answered one: an answered-but-unconsumed response is still the
+        operator's valid work and is picked up on resume.
+        """
+        run_id = flatten_text(run_id)
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE manual_requests SET status = 'cancelled' "
+                "WHERE run_id = ? AND status = 'pending'",
+                (run_id,),
+            )
+            cursor = self._conn.execute(
+                """
+                INSERT INTO manual_requests (run_id, record_id, company_name, prompt,
+                                             error, status, created_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    run_id,
+                    flatten_text(record_id),
+                    flatten_text(company_name),
+                    str(prompt or ""),
+                    flatten_text(error),
+                    self._now(),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def pending_manual_request(self, run_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM manual_requests WHERE run_id = ? AND status = 'pending' "
+            "ORDER BY request_id DESC LIMIT 1",
+            (flatten_text(run_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def submit_manual_response(self, run_id: str, raw_response: str) -> int:
+        """The operator pasted the raw response into the run's pending box."""
+        cursor = self._conn.execute(
+            "UPDATE manual_requests SET raw_response = ?, status = 'answered', "
+            "answered_at = ? WHERE run_id = ? AND status = 'pending'",
+            (str(raw_response or ""), self._now(), flatten_text(run_id)),
+        )
+        if cursor.rowcount == 0:
+            raise ReviewStoreError(f"no pending manual request for run {run_id!r}")
+        return cursor.rowcount
+
+    def consume_manual_response(self, run_id: str) -> str | None:
+        """Return the run's answered raw response, marked consumed exactly once."""
+        with transaction(self._conn):
+            row = self._conn.execute(
+                "SELECT request_id, raw_response FROM manual_requests "
+                "WHERE run_id = ? AND status = 'answered' AND consumed_at = '' "
+                "ORDER BY request_id DESC LIMIT 1",
+                (flatten_text(run_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE manual_requests SET status = 'consumed', consumed_at = ? "
+                "WHERE request_id = ?",
+                (self._now(), row["request_id"]),
+            )
+        return str(row["raw_response"])
+
+    def cancel_manual_requests(self, run_id: str) -> int:
+        cursor = self._conn.execute(
+            "UPDATE manual_requests SET status = 'cancelled' "
+            "WHERE run_id = ? AND status = 'pending'",
+            (flatten_text(run_id),),
+        )
+        return cursor.rowcount
 
     # ------------------------------------------------------------------ #
     # Records (identity: dedupe key; a repeat updates the row in place)

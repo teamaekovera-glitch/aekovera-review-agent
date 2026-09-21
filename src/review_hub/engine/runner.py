@@ -21,6 +21,18 @@ Pipeline states per record (identical decision order to legacy):
          +-> DECIDING (the one POST /verdict - never retried) -> next
 
 Every arrow is emitted to the sink as a TransitionRecord.
+
+Run-level lifecycle (wired to the SQLite store through a
+``review_hub.lifecycle.RunLifecycle`` collaborator, optional): the run parks
+at safe boundaries and between record stages, and the park states share this
+transition stream - PAUSED (operator hold or a runner safety stop),
+PAUSED_FOR_LOGIN (the QA session expired mid-run), AWAITING_MANUAL (the
+paste-box backend is waiting for the operator's pasted ChatGPT response),
+CANCELLED (operator cancel at a boundary). Parks return a summary whose
+``final_state`` names the park instead of run_done; ``resume()`` continues
+the same runner, and ``BatchRunner.from_store`` rebuilds one after a crash
+from the store's persisted transition log and research ledger - a decided
+record is never re-researched within a run.
 """
 
 from __future__ import annotations
@@ -47,9 +59,14 @@ from review_hub.engine.corrections import (
 )
 from review_hub.engine.fields import IDENTITY_FIELD_KEYS, is_substantial_identity_change
 from review_hub.engine.finalization import perform_final_action, prepare_final_snapshot
-from review_hub.engine.research import LLMError, ResearchBackend
-from review_hub.engine.transport import QAClient
+from review_hub.engine.research import LLMError, ManualPauseRequested, ResearchBackend
+from review_hub.engine.transport import QAClient, QASessionExpired
 from review_hub.jsonutil import safe_text
+from review_hub.lifecycle import RunStatus
+
+# The transition-log outcome the repeat guard emits on a reuse; the crash
+# recovery replay counts these to restore the run's cumulative repeat total.
+_REPEAT_GUARD_OUTCOME = "repeat guard: reusing previous result"
 
 
 class RunnerState(str, Enum):
@@ -69,6 +86,12 @@ class RunnerState(str, Enum):
     RECORD_DONE = "record_done"
     RUN_DONE = "run_done"
     STOPPED = "stopped"
+    # Run-level park states, shared with the run-status vocabulary
+    # (review_hub.lifecycle.RunStatus) so one transition stream carries both.
+    PAUSED = "paused"
+    PAUSED_FOR_LOGIN = "paused_for_login"
+    AWAITING_MANUAL = "awaiting_manual"
+    CANCELLED = "cancelled"
 
 
 class PageOps:
@@ -172,6 +195,8 @@ class BatchRunner:
         max_repeat_passes: int = MAX_REPEAT_PASSES,
         log: Any = print,
         clock: Any = time.time,
+        run_id: str | None = None,
+        lifecycle: Any | None = None,
     ) -> None:
         self.ops = ops
         self.backend = backend
@@ -184,8 +209,16 @@ class BatchRunner:
         self.max_repeat_passes = max_repeat_passes
         self.log = log
         self.clock = clock
+        # One stable id per run: transitions, the ledger, and the run row all
+        # share it. The injected lifecycle owns the identity when present (its
+        # runs-table row is keyed by it); an explicit run_id wins for a bare
+        # runner; otherwise generate one - run() no longer mints a new one, so
+        # a parked-and-resumed run keeps writing the same history.
+        self.run_id = run_id or (getattr(lifecycle, "run_id", None) or uuid.uuid4().hex[:12])
+        self.lifecycle = lifecycle
+        self._run_count: int | None = None
+        self._stop_reason = ""
 
-        self.run_id = uuid.uuid4().hex[:12]
         self.state = RunnerState.IDLE
         self.processed = 0
         self.failures = 0
@@ -221,6 +254,10 @@ class BatchRunner:
 
         meta = {k: v for k, v in meta.items() if v is not None}
         self.state = to_state
+        if to_state is RunnerState.STOPPED:
+            # Remember why the loop stopped so the parked run's status row
+            # carries the reason without re-reading the transition log.
+            self._stop_reason = error or outcome
         self.sink.emit(
             TransitionRecord(
                 run_id=self.run_id,
@@ -249,12 +286,66 @@ class BatchRunner:
     def run(self, page: Any, run_count: int) -> dict[str, Any]:
         """Process up to ``run_count`` records. Returns the run summary."""
         self.started_at = self.clock()
-        self.run_id = uuid.uuid4().hex[:12]
+        self._run_count = run_count
+        if self.lifecycle is not None:
+            self.lifecycle.start(mode=self.mode, run_count=run_count)
         self._transition(
             RunnerState.IDLE, RunnerState.READING, outcome=f"run started: {run_count} records"
         )
+        return self._drive(page, run_count)
 
+    def resume(self, page: Any, run_count: int | None = None) -> dict[str, Any]:
+        """Continue a parked (or crashed) run from where the log says it stopped.
+
+        Same instance: in-memory counters pick up mid-run exactly as they
+        were. A runner rebuilt by :meth:`from_store` resumes from the store's
+        persisted counters instead - either way the loop continues on the
+        same run id, appending to one transition history.
+        """
+        if run_count is not None:
+            self._run_count = run_count
+        if self._run_count is None:
+            raise RuntimeError("resume needs a run budget: pass run_count or wire a lifecycle")
+        if self.lifecycle is not None:
+            self.lifecycle.resume()
+        self._transition(self.state, RunnerState.READING, outcome="run resumed")
+        return self._drive(page, self._run_count)
+
+    def _drive(self, page: Any, run_count: int) -> dict[str, Any]:
+        """Run the batch loop, translating interruptions into parks."""
+        try:
+            parked = self._loop(page, run_count)
+        except ManualPauseRequested as exc:
+            parked = self._park_awaiting_manual(exc)
+        except QASessionExpired as exc:
+            # The QA session expired mid-run. This is a park, not a failure:
+            # a human logs back in and the run resumes in place.
+            parked = self._park(
+                RunnerState.PAUSED_FOR_LOGIN,
+                reason=f"the review session needs a human login ({exc})",
+            )
+        except Exception as exc:
+            # A hard failure kills the run terminally (after the record-level
+            # STOPPED transition, if any, recorded the detail). The exception
+            # still propagates - loud, never swallowed.
+            if self.lifecycle is not None:
+                self.lifecycle.fail(reason=str(exc))
+            raise
+        if parked is not None:
+            return parked
+        return self._finish()
+
+    def _loop(self, page: Any, run_count: int) -> dict[str, Any] | None:
+        """Process records until the budget or a stop. None means: finish."""
         while self.processed < run_count:
+            # SAFE BOUNDARY: operator pause/cancel take effect here, between
+            # records - never mid-research, mid-apply, or before a verdict.
+            command = self._poll_command()
+            if command == "cancel":
+                return self._park(RunnerState.CANCELLED, reason="cancelled at a safe boundary")
+            if command == "pause":
+                return self._park(RunnerState.PAUSED, reason="paused at a safe boundary")
+
             self.log("\n" + "#" * 60)
             self.log(f"RECORD {self.processed + 1} / {run_count}")
             self.log("#" * 60)
@@ -289,7 +380,64 @@ class BatchRunner:
                 )
             )
 
-            result = self._research(page, record, is_repeat)
+            # The ledger's durable half of the repeat guard: a record this run
+            # already decided (verdict submitted or held) is never researched
+            # again - even when the in-memory guard above was rebuilt after a
+            # crash/restart and no longer matches. The persisted decision is
+            # reused, and the record counts as a repeat: already tallied and
+            # already budgeted when it was first decided.
+            decided = (
+                self.lifecycle.decided_result(this_id, this_name) if self.lifecycle else None
+            )
+            if decided is not None and not is_repeat:
+                self.log(
+                    f"\n✓ {this_id or this_name} was already decided earlier in this "
+                    "run - reusing the persisted decision, no research round-trip."
+                )
+                self._transition(
+                    RunnerState.RESEARCHING,
+                    RunnerState.VALIDATING,
+                    record_id=this_id,
+                    supplier_name=this_name,
+                    outcome="already decided earlier in this run; reusing the persisted decision",
+                )
+                result = self._with_judgement(dict(decided))
+                is_repeat = True
+            elif (
+                decided is not None
+                and is_repeat
+                and self._repeat_passes >= self.max_repeat_passes
+            ):
+                # The page keeps re-serving a record the ledger says is
+                # already decided, and the in-memory guard is out of reuse
+                # passes. Re-researching a decided record is forbidden, and
+                # reuse can never advance the budget - the only safe move is
+                # to stop, exactly like the other no-progress guards.
+                self.log(
+                    f"\n⚠ {this_id or this_name} was already decided earlier in this "
+                    "run and the page keeps re-serving it. Stopping safely - no "
+                    "record is re-researched once decided. Advance the review page "
+                    "past this record and start a new run."
+                )
+                self._transition(
+                    RunnerState.READING,
+                    RunnerState.STOPPED,
+                    card_id=this_id,
+                    record_id=this_id,
+                    supplier_name=this_name,
+                    error="the same already-decided record keeps being served",
+                    outcome="stopped safely (no progress possible)",
+                )
+                break
+            else:
+                try:
+                    result, is_repeat = self._research(page, record, is_repeat)
+                except ManualPauseRequested as exc:
+                    # The paste-box backend needs the operator's response: park
+                    # the run with this record's prompt surfaced. The record is
+                    # mid-research - exactly where the engine already
+                    # checkpoints.
+                    return self._park_awaiting_manual(this_id, this_name, exc)
             if result is None:
                 # Research failed (loudly). Skip and maybe stop.
                 if self.failures >= self.max_consecutive_failures:
@@ -346,7 +494,7 @@ class BatchRunner:
                 break
             self.ops.wait_settle(page)
 
-        return self._finish()
+        return None
 
     # ------------------------------------------------------------------ #
     # Stages
@@ -405,8 +553,14 @@ class BatchRunner:
 
     def _research(
         self, page: Any, record: dict[str, Any], is_repeat: bool
-    ) -> dict[str, Any] | None:
-        """RESEARCHING with the repeat guard. None on (loud) failure."""
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """RESEARCHING with the repeat guard.
+
+        Returns ``(result, reused)`` - ``reused`` is True when the result
+        came from the repeat guard rather than a fresh research round-trip,
+        so the caller must not double-count the tally or the budget. None
+        on (loud) failure.
+        """
         this_id = self.ops.read_record_id(page)
         this_name = safe_text(record["fields"].get("company_name")).lower()
 
@@ -423,9 +577,9 @@ class BatchRunner:
                 RunnerState.VALIDATING,
                 record_id=this_id,
                 supplier_name=this_name,
-                outcome="repeat guard: reusing previous result",
+                outcome=_REPEAT_GUARD_OUTCOME,
             )
-            return dict(self._last_result or {})
+            return self._with_judgement(dict(self._last_result or {})), True
 
         if is_repeat:
             self.log(
@@ -459,7 +613,7 @@ class BatchRunner:
             )
             if not self.continue_on_research_failure:
                 raise
-            return None
+            return None, False
 
         from review_hub.engine.finalization import validate_scope_result
 
@@ -478,7 +632,7 @@ class BatchRunner:
             )
             if not self.continue_on_research_failure:
                 raise
-            return None
+            return None, False
 
         self.failures = 0
         self._transition(
@@ -488,7 +642,7 @@ class BatchRunner:
             supplier_name=this_name,
             outcome=f"research ok: {result.get('decision')}",
         )
-        return result
+        return result, False
 
     def _manual_review(self, page: Any, record: dict[str, Any], result: dict[str, Any]) -> None:
         """Genuinely uncertain after real research - route to a human.
@@ -509,6 +663,17 @@ class BatchRunner:
             reason=safe_text(result.get("manual_review_reason")),
         )
         self._last_finalized_id, self._last_finalized_name, self._last_result = "", "", None
+        # Ledger: the record was flagged, not decided - no verdict, no hold,
+        # no tally. On resume the operator decides it fresh; the guard is
+        # cleared exactly as before (a flagged record re-serves as new work).
+        if self.lifecycle is not None:
+            self.lifecycle.record_decision(
+                record_id=safe_text(record.get("record_id")),
+                company_name=safe_text(result.get("company_name")),
+                kind="manual_review",
+                result=self._persistable(result),
+                finalized=False,
+            )
 
     def _reject(
         self,
@@ -538,9 +703,11 @@ class BatchRunner:
                 supplier_name=this_name,
                 outcome=f"rejected ({outcome_name})",
             )
-            self._remember_finalized(this_id, this_name, result)
             if not is_repeat:
                 self.processed += 1
+            # After the increment: the ledger snapshot carries the true
+            # post-boundary budget for a crash-resume replay.
+            self._remember_finalized(this_id, this_name, result)
         except Exception as exc:
             self._transition(
                 RunnerState.DECIDING,
@@ -815,9 +982,11 @@ class BatchRunner:
             )
             # A held record is NOT accepted; remember the research result so
             # a same-supplier re-serve does not burn another round-trip.
-            self._remember_finalized(this_id, this_name, result)
             if not is_repeat:
                 self.processed += 1
+            # After the increment: the ledger snapshot carries the true
+            # post-boundary budget for a crash-resume replay.
+            self._remember_finalized(this_id, this_name, result)
             return "continue"
 
         # DECIDING: the one verdict POST - never retried (see
@@ -853,9 +1022,11 @@ class BatchRunner:
             outcome=f"{safe_text(result.get('decision')).lower()} - verdict submitted",
             skipped=skipped,
         )
-        self._remember_finalized(this_id, this_name, result)
         if not is_repeat:
             self.processed += 1
+        # After the increment: the ledger snapshot carries the true
+        # post-boundary budget for a crash-resume replay.
+        self._remember_finalized(this_id, this_name, result)
         return "continue"
 
     # ------------------------------------------------------------------ #
@@ -863,23 +1034,216 @@ class BatchRunner:
         self._last_finalized_id = this_id
         self._last_finalized_name = this_name
         self._last_result = result
+        # The ledger's durable half: this run decided this record (verdict
+        # submitted or held) - never research it again within this run, and
+        # resume exactly here after a crash. Called after the processed
+        # increment so processed_after is the true post-boundary budget.
+        if self.lifecycle is not None:
+            self.lifecycle.record_decision(
+                record_id=this_id,
+                company_name=this_name,
+                kind="finalized",
+                result=self._persistable(result),
+                tally=dict(self.decision_tally),
+                finalized=True,
+                processed_after=self.processed,
+            )
+
+    def _persistable(self, result: dict[str, Any]) -> dict[str, Any]:
+        """The result without the in-memory Judgement object (JSON-safe)."""
+        return {k: v for k, v in result.items() if k != "_judgement"}
+
+    def _with_judgement(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Rebuild the validation judgement for a reused (persisted) result.
+
+        Deterministic: the judgement is a pure function of the result dict,
+        so a result reused from the ledger validates identically to the
+        original - same decisions, same holds, same downgrades.
+        """
+        if "_judgement" in result:
+            return result
+        from review_hub.engine.finalization import validate_scope_result
+
+        return validate_scope_result(dict(result))
 
     def _finish(self) -> dict[str, Any]:
         elapsed = (self.clock() - self.started_at) if self.started_at else 0.0
         # RUN_DONE is the durable log's end marker; the summary reports how
         # the run actually ended: an early safety stop, or the full budget.
-        terminal = "stopped" if self.state is RunnerState.STOPPED else RunnerState.RUN_DONE.value
+        stopped = self.state is RunnerState.STOPPED
         self._transition(
             self.state,
             RunnerState.RUN_DONE,
             outcome=f"records processed: {self.processed}",
             decision_tally=dict(self.decision_tally),
         )
+        summary = self._summary("stopped" if stopped else RunnerState.RUN_DONE.value, elapsed)
+        if self.lifecycle is not None:
+            if stopped:
+                # A graceful stop is a park, not a failure: the record-level
+                # machine stopped safely (window closed, holds pending, too
+                # many consecutive failures) and the run resumes in place
+                # once the blocker is fixed. No FAILED row, no dropped state.
+                self.lifecycle.pause(reason=self._stop_reason or "stopped safely")
+            else:
+                self.lifecycle.complete(summary)
+        return summary
+
+    def _summary(self, final_state: str, elapsed: float) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "processed": self.processed,
             "repeat_passes_total": self.repeat_passes_total,
             "decision_tally": dict(self.decision_tally),
             "elapsed_s": elapsed,
-            "final_state": terminal,
+            "final_state": final_state,
         }
+
+    def _park(
+        self,
+        state: RunnerState,
+        *,
+        reason: str = "",
+        record_id: str = "",
+        supplier_name: str = "",
+    ) -> dict[str, Any]:
+        """Park the run in ``state`` and return its summary.
+
+        No RUN_DONE marker is emitted: the run is not finished - the log's
+        end marker waits for the resumed run's real finish, so the history
+        reads as one continuous run.
+        """
+        elapsed = (self.clock() - self.started_at) if self.started_at else 0.0
+        self._transition(
+            self.state,
+            state,
+            card_id=record_id,
+            record_id=record_id,
+            supplier_name=supplier_name,
+            outcome=reason,
+        )
+        if self.lifecycle is not None:
+            status = RunStatus(state.value)
+            if status is RunStatus.CANCELLED:
+                # Terminal: mark it, release in-flight paste boxes.
+                self.lifecycle.cancel(reason=reason, summary=self._summary(state.value, elapsed))
+            elif status is RunStatus.PAUSED_FOR_LOGIN:
+                self.lifecycle.pause_for_login(reason=reason)
+            elif status is RunStatus.PAUSED:
+                self.lifecycle.pause(reason=reason)
+        return {**self._summary(state.value, elapsed), "pause_reason": reason}
+
+    def _park_awaiting_manual(
+        self, this_id: str, this_name: str, exc: ManualPauseRequested
+    ) -> dict[str, Any]:
+        """AWAITING_MANUAL: the paste-box backend needs the operator's response."""
+        elapsed = (self.clock() - self.started_at) if self.started_at else 0.0
+        request_id = None
+        if self.lifecycle is not None:
+            request_id = self.lifecycle.await_manual(
+                record_id=this_id,
+                company_name=this_name,
+                prompt=exc.prompt,
+                error=exc.detail,
+            )
+        self._transition(
+            self.state,
+            RunnerState.AWAITING_MANUAL,
+            record_id=this_id,
+            supplier_name=this_name,
+            outcome="waiting for the operator's pasted ChatGPT response",
+            error=exc.detail,
+            request_id=request_id,
+        )
+        reason = exc.detail or (
+            f"waiting for the pasted ChatGPT response for {this_id or 'the current record'}"
+        )
+        return {
+            **self._summary(RunnerState.AWAITING_MANUAL.value, elapsed),
+            "pause_reason": reason,
+        }
+
+    def _poll_command(self) -> str | None:
+        """The operator command queued for this boundary, if any."""
+        return self.lifecycle.poll_command() if self.lifecycle else None
+
+    # ------------------------------------------------------------------ #
+    # Crash recovery / operator resume from the store
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def from_store(
+        cls,
+        store: Any,
+        run_id: str,
+        ops: PageOps,
+        backend: ResearchBackend,
+        *,
+        sink: Any | None = None,
+        **kwargs: Any,
+    ) -> BatchRunner:
+        """Rebuild a runner for a stored run (crash recovery / operator resume).
+
+        Counters replay from the store's research ledger and transition log:
+        the budget position, the decision tally, and the repeat guard's
+        last-finalized state come from the persisted history, so a restart
+        neither re-researches decided records nor double-counts processed
+        ones. Defaults the sink to the store's own transition sink and the
+        mode to the run's stored mode.
+        """
+        from review_hub.lifecycle import RunLifecycle
+
+        lifecycle = RunLifecycle(store, run_id)
+        run_row = lifecycle.run_row()
+        if run_row is None:
+            raise RuntimeError(f"no stored run {run_id!r} to resume")
+        kwargs.setdefault("mode", run_row.get("mode") or "auto")
+        runner = cls(
+            ops=ops,
+            backend=backend,
+            sink=sink if sink is not None else store.sink(),
+            run_id=run_id,
+            lifecycle=lifecycle,
+            **kwargs,
+        )
+        runner._restore(lifecycle)
+        return runner
+
+    def _restore(self, lifecycle: Any) -> None:
+        """Replay in-memory counters from the persisted run state."""
+        run_row = lifecycle.run_row() or {}
+        # The run's budget is persisted on the run row: a restart resumes
+        # with the same run_count without re-passing it.
+        if run_row.get("run_count"):
+            self._run_count = int(run_row["run_count"])
+        rows = lifecycle.decisions()
+        # The most recent non-empty tally snapshot is the runner's tally
+        # exactly as of the last record boundary - what a resume continues
+        # from, and what keeps the summary identical to an uninterrupted run.
+        self.decision_tally = {}
+        for row in reversed(rows):
+            tally = row.get("tally") or {}
+            if tally:
+                self.decision_tally = {k: int(v) for k, v in tally.items()}
+                break
+        self.processed = max((int(row.get("processed_after") or 0) for row in rows), default=0)
+        # Repeat guard: replay the last-finalized state in decision order.
+        self._last_finalized_id = ""
+        self._last_finalized_name = ""
+        self._last_result = None
+        for row in rows:
+            if int(row.get("finalized") or 0):
+                self._last_finalized_id = str(row.get("record_id") or "")
+                self._last_finalized_name = str(row.get("company_name") or "")
+                self._last_result = dict(row.get("result") or {})
+            else:  # manual review: no verdict, the guard is cleared
+                self._last_finalized_id = ""
+                self._last_finalized_name = ""
+                self._last_result = None
+        # The cumulative repeat count survives in the transition log.
+        self.repeat_passes_total = lifecycle.repeat_total(_REPEAT_GUARD_OUTCOME)
+        # Consecutive-failure counters describe the previous process's last
+        # stretch; a resumed process starts its own streak.
+        self.failures = 0
+        self.discovery_failures = 0
+        self._repeat_passes = 0
+        self.state = RunnerState.IDLE
