@@ -20,6 +20,19 @@ SYSTEM_PROMPT = (
     "You reply with a single valid JSON object and nothing else."
 )
 
+# Variant for backends whose model browses the live web itself (Obvious
+# autonomous agent sessions). The OpenRouter harness pre-fetches evidence into
+# the prompt, so SYSTEM_PROMPT stays correct there; an agent that CAN browse
+# must not be told it cannot.
+SYSTEM_PROMPT_BROWSING = (
+    "You are a strict data-verification agent for a US food & beverage CPG supply-chain "
+    "database. You research the company yourself with web search and page reads, and you "
+    "judge the evidence you gather. You never invent facts, never guess contact details, "
+    "and never assume a company is in scope. When the evidence is insufficient, follow the "
+    "rulebook: PARK or RE_ENRICH a real in-scope company, REJECT only out-of-scope or "
+    "no-trace entries. You reply with a single valid JSON object and nothing else."
+)
+
 
 def build_rules_block(browsing=False):
     """The v4 judge rulebook (prompts/judge_v4.md).
