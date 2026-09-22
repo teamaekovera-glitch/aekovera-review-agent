@@ -588,15 +588,24 @@ class BatchRunner:
             )
         self._repeat_passes = 0
 
-        from review_hub.engine.prompting import SYSTEM_PROMPT, build_research_prompt
+        from review_hub.engine.prompting import (
+            SYSTEM_PROMPT,
+            SYSTEM_PROMPT_BROWSING,
+            build_research_prompt,
+        )
 
         prompt = (
             self.build_prompt(record)
             if self.build_prompt
             else build_research_prompt(record, browsing=True)
         )
+        system_prompt = (
+            SYSTEM_PROMPT_BROWSING
+            if getattr(self.backend, "browsing", False)
+            else SYSTEM_PROMPT
+        )
         try:
-            result = self.backend.research(prompt, SYSTEM_PROMPT)
+            result = self.backend.research(prompt, system_prompt)
         except LLMError as exc:
             # Any backend failure is loud: report it, count it, and let the
             # loop decide skip vs stop. A silent None would strand the

@@ -78,6 +78,10 @@ class OpenRouterTransport:
 class OpenRouterClient:
     """Automated research over OpenRouter using only free endpoints."""
 
+    # The OpenRouter harness pre-fetches evidence into the prompt; the model
+    # does not browse, so the runner sends the evidence-only operating rules.
+    browsing = False
+
     def __init__(
         self,
         *,

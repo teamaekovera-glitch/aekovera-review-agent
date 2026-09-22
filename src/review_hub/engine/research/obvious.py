@@ -73,6 +73,10 @@ class ObviousTransport:
 class ObviousAgentClient:
     """Dispatch the research prompt to an Obvious agent session, await the JSON."""
 
+    # The agent browses the live web itself, so the runner hands it the
+    # browsing-capable operating rules instead of the evidence-only ones.
+    browsing = True
+
     def __init__(
         self,
         *,

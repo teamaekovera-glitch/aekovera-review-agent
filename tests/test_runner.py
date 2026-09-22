@@ -11,7 +11,10 @@ New coverage required by the engine-port task:
 
 from review_hub.engine import corrections
 from review_hub.engine.discovery import FieldDiscoveryError
+from review_hub.engine.prompting import SYSTEM_PROMPT, SYSTEM_PROMPT_BROWSING
 from review_hub.engine.research import LLMError
+from review_hub.engine.research.obvious import ObviousAgentClient
+from review_hub.engine.research.openrouter import OpenRouterClient
 from review_hub.engine.runner import BatchRunner, RunnerState
 
 # ---------------------------------------------------------------------------
@@ -111,6 +114,21 @@ class FakeBackend:
         if self._last is None:
             raise RuntimeError("FakeBackend: no scripted result to serve")
         return self._last
+
+
+class SystemPromptCapturingBackend:
+    """Records the system prompt the runner hands the backend."""
+
+    browsing = False
+
+    def __init__(self, browsing_flag=None):
+        if browsing_flag is not None:
+            self.browsing = browsing_flag
+        self.systems = []
+
+    def research(self, prompt, system):
+        self.systems.append(system)
+        return accept_result()
 
 
 def accept_result(**over):
@@ -259,6 +277,25 @@ def test_accept_with_flagged_website_is_held_not_submitted():
     # A held record is NOT accepted: the research result is remembered for
     # the repeat guard instead of burning another round-trip.
     assert backend.calls == 1
+
+
+def test_runner_sends_evidence_only_system_prompt_by_default():
+    ops = FakeOps(serve=[make_record()])
+    backend = SystemPromptCapturingBackend()
+    make_runner(ops, backend).run(page=None, run_count=1)
+    assert backend.systems == [SYSTEM_PROMPT]
+
+
+def test_runner_sends_browsing_system_prompt_to_browsing_backends():
+    ops = FakeOps(serve=[make_record()])
+    backend = SystemPromptCapturingBackend(browsing_flag=True)
+    make_runner(ops, backend).run(page=None, run_count=1)
+    assert backend.systems == [SYSTEM_PROMPT_BROWSING]
+
+
+def test_backend_browsing_flags():
+    assert ObviousAgentClient.browsing is True
+    assert OpenRouterClient.browsing is False
 
 
 # ---------------------------------------------------------------------------
